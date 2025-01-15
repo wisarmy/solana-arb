@@ -7,12 +7,14 @@ use jupiter_swap_api_client::{
     JupiterSwapApiClient, quote::QuoteRequest, swap::SwapRequest,
     transaction_config::TransactionConfig,
 };
+use solana_arb::dex::Dex;
 use solana_arb::token::get_mint;
-use solana_arb::{get_payer, get_rpc_client, logger};
+use solana_arb::{arb, get_payer, get_rpc_client, jito, logger, tx};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::VersionedTransaction;
-use spl_token::ui_amount_to_amount;
+use spl_token::{amount_to_ui_amount, ui_amount_to_amount};
+use tracing::{info, warn};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -27,10 +29,28 @@ enum Commands {
         mint: Pubkey,
         #[clap(help = "Swap direction: [buy, sell]")]
         direction: String,
-        #[clap(help = "UI amount to swap in")]
+        #[clap(help = "WSOL ui amount for swap")]
         amount_in: f64,
         #[arg(long, help = "use jito to swap", default_value_t = false)]
         jito: bool,
+    },
+
+    Arb {
+        mint: Pubkey,
+        #[clap(help = "WSOL ui amount for arbitrage")]
+        amount_in: f64,
+        #[arg(
+            long,
+            help = "Interval between each arbitrage attempt in seconds",
+            default_value_t = 1
+        )]
+        interval: u64,
+        #[arg(
+            long,
+            help = "Minimum profit in SOL to trigger arbitrage",
+            default_value_t = 0.0001
+        )]
+        min_profit: f64,
     },
 }
 
@@ -44,7 +64,7 @@ async fn main() -> Result<()> {
     let payer = get_payer()?;
 
     let api_base_url = env::var("API_BASE_URL").unwrap_or("https://quote-api.jup.ag/v6".into());
-    println!("Using base url: {}", api_base_url);
+    info!("Using jupiter api url: {}", api_base_url);
     let jupiter_swap_api_client = JupiterSwapApiClient::new(api_base_url);
 
     match &cli.command {
@@ -54,7 +74,7 @@ async fn main() -> Result<()> {
             amount_in,
             jito,
         } => {
-            println!(
+            info!(
                 "mint: {}, direction: {}, amount_in: {}, jito: {}",
                 mint, direction, amount_in, jito
             );
@@ -72,7 +92,7 @@ async fn main() -> Result<()> {
                 amount: ui_amount_to_amount(*amount_in, in_mint.decimals),
                 input_mint: token_in,
                 output_mint: token_out,
-                dexes: Some("Whirlpool,Meteora DLMM,Raydium CLMM".into()),
+                dexes: Some("Raydium,Meteora DLMM,Whirlpool".into()),
                 slippage_bps: 500,
                 ..QuoteRequest::default()
             };
@@ -123,18 +143,97 @@ async fn main() -> Result<()> {
                 }
             }
         }
+
+        Commands::Arb {
+            mint,
+            amount_in,
+            interval,
+            min_profit,
+        } => {
+            info!(
+                "mint: {}, amount_in: {}, interval: {}s, min_profit: {} SOL",
+                mint, amount_in, interval, min_profit
+            );
+            let min_profit_lamports = ui_amount_to_amount(*min_profit, 9);
+
+            // init tip accounts
+            jito::init_tip_accounts().await?;
+
+            loop {
+                let rpc_client = match get_rpc_client() {
+                    Ok(client) => client,
+                    Err(e) => {
+                        warn!("Failed to get RPC client: {}", e);
+                        continue;
+                    }
+                };
+                match arb::caculate_profit(
+                    &jupiter_swap_api_client,
+                    &ui_amount_to_amount(*amount_in, 9),
+                    &spl_token::native_mint::id(),
+                    mint,
+                    Dex::RAYDIUM | Dex::METEORA_DLMM | Dex::WHIRLPOOL,
+                )
+                .await
+                {
+                    Ok((profit, quote_buy_response, quote_sell_response)) => {
+                        if profit < min_profit_lamports as i64 {
+                            info!(
+                                "Arb calculate {}, Profit: {} SOL too small, skip",
+                                mint,
+                                if profit < 0 {
+                                    -1.0 * amount_to_ui_amount(profit.abs() as u64, 9)
+                                } else {
+                                    amount_to_ui_amount(profit as u64, 9)
+                                },
+                            );
+                        } else {
+                            info!(
+                                "Arb calculate {}, Profit: {} sol",
+                                mint,
+                                amount_to_ui_amount(profit as u64, 9)
+                            );
+
+                            match async {
+                                let buy_versioned_transaction = arb::swap(
+                                    &jupiter_swap_api_client,
+                                    &payer.pubkey(),
+                                    &quote_buy_response,
+                                )
+                                .await?;
+                                let sell_versioned_transaction = arb::swap(
+                                    &jupiter_swap_api_client,
+                                    &payer.pubkey(),
+                                    &quote_sell_response,
+                                )
+                                .await?;
+                                let versioned_transactions =
+                                    vec![buy_versioned_transaction, sell_versioned_transaction];
+                                let tip_lamports = profit as u64 / 2;
+                                tx::send_transaction_with_tip(
+                                    &rpc_client,
+                                    &payer,
+                                    versioned_transactions,
+                                    tip_lamports,
+                                    true,
+                                )
+                                .await
+                            }
+                            .await
+                            {
+                                Ok(_) => info!("Arbitrage executed successfully"),
+                                Err(e) => info!("Failed to execute arbitrage: {}", e),
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        info!("Error calculating profit: {}", e);
+                    }
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(*interval)).await;
+            }
+        }
     };
-
-    // POST /swap-instructions
-    // let swap_instructions = jupiter_swap_api_client
-    //     .swap_instructions(&SwapRequest {
-    //         user_public_key: TEST_WALLET,
-    //         quote_response,
-    //         config: TransactionConfig::default(),
-    //     })
-    //     .await
-    //     .unwrap();
-    // println!("swap_instructions: {swap_instructions:?}");
-
     Ok(())
 }

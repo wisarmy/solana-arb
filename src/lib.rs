@@ -5,8 +5,12 @@ use solana_sdk::signature::Keypair;
 use std::{env, sync::Arc};
 use tracing::debug;
 
+pub mod arb;
+pub mod dex;
+pub mod jito;
 pub mod logger;
 pub mod token;
+pub mod tx;
 
 pub fn get_random_rpc_url() -> Result<String> {
     let cluster_urls = env::var("RPC_ENDPOINTS")?
