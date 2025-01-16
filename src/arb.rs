@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use anyhow::{Ok, Result, anyhow};
 use jupiter_swap_api_client::{
     JupiterSwapApiClient,
@@ -20,7 +18,7 @@ pub async fn caculate_profit(
     token_out: &Pubkey,
     dexes: Dex,
 ) -> Result<(i64, QuoteResponse, QuoteResponse)> {
-    let slippage_bps = 2000;
+    let slippage_bps = 0;
     let native_mint = spl_token::native_mint::id();
     if token_in != &native_mint {
         return Err(anyhow!("Only support swap from native mint"));
@@ -33,7 +31,6 @@ pub async fn caculate_profit(
         dexes: Some(dexes.to_string()),
         slippage_bps,
         only_direct_routes: Some(true),
-        max_accounts: Some(20),
         ..QuoteRequest::default()
     };
     let quote_buy_response = jupiter_swap_api_client.quote(&quote_request).await?;
@@ -42,12 +39,10 @@ pub async fn caculate_profit(
     let quote_request = QuoteRequest {
         amount: quote_buy_response.out_amount,
         input_mint: *token_out,
-        // output_mint: *token_in,
-        output_mint: Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")?,
+        output_mint: *token_in,
         dexes: Some(dexes.to_string()),
         slippage_bps,
         only_direct_routes: Some(true),
-        max_accounts: Some(20),
         ..QuoteRequest::default()
     };
     let quote_sell_response = jupiter_swap_api_client.quote(&quote_request).await?;
@@ -83,6 +78,7 @@ pub fn merge_quotes(
 
     // set price impact
     merged_quote.price_impact_pct = Decimal::zero();
+    // merged_quote.price_impact_pct = Decimal::from_f64(1.0).unwrap();
 
     // set route plan
     let mut merged_route_plan = merged_quote.route_plan;
