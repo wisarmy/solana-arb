@@ -39,6 +39,7 @@ serde_json = { workspace = true }
 indicatif = "0.17.8"
 jito-json-rpc-client = { git = "https://github.com/wisarmy/jito-block-engine-json-rpc-client.git", package = "jito-block-engine-json-rpc-client", branch = "v2.0" }
 bitflags = "2.7.0"
+rust_decimal = "1.36.0"
 
 
 [dev-dependencies]
