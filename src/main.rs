@@ -254,6 +254,13 @@ pub async fn run_arbitrage(
                         tip_lamports,
                     );
 
+                    debug!(
+                        "[{}] out_amount: {}, other_amount_threshold: {}",
+                        execution_id,
+                        quote_response.out_amount,
+                        quote_response.other_amount_threshold
+                    );
+
                     let mut tx_config = TransactionConfig::default();
                     tx_config.dynamic_compute_unit_limit = true;
                     tx_config.use_shared_accounts = Some(false);

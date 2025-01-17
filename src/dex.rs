@@ -11,6 +11,27 @@ bitflags! {
     }
 }
 
+impl Dex {
+    pub fn exclude(&self, other: &Dex) -> Self {
+        Self::from_bits_truncate(self.bits() & !other.bits())
+    }
+
+    // Vec to Dex
+    pub fn from_vec(v: Vec<&str>) -> Self {
+        let mut dex = Dex::empty();
+        for d in v {
+            match d {
+                "Raydium" => dex |= Dex::RAYDIUM,
+                "Meteora DLMM" => dex |= Dex::METEORA_DLMM,
+                "Whirlpool" => dex |= Dex::WHIRLPOOL,
+                "Phoenix" => dex |= Dex::PHOENIX,
+                _ => {}
+            }
+        }
+        dex
+    }
+}
+
 impl ToString for Dex {
     fn to_string(&self) -> String {
         let mut dexes = Vec::new();
