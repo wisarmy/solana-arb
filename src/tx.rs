@@ -89,6 +89,7 @@ pub async fn new_signed_and_send(
         bundle_id,
         Duration::from_millis(1000),
         Duration::from_secs(10),
+        true,
     )
     .await?;
 
@@ -103,7 +104,7 @@ pub fn get_tip_instruction(
 ) -> Instruction {
     let tip = amount_to_ui_amount(tip_lamports, spl_token::native_mint::DECIMALS);
     info!(
-        "tip account: {}, tip(sol): {}, lamports: {}",
+        "💎 tip account: {}, tip(sol): {}, lamports: {}",
         tip_account, tip, tip_lamports
     );
     system_instruction::transfer(from_pubkey, &tip_account, tip_lamports)
@@ -147,7 +148,7 @@ pub async fn send_versioned_transaction(
     bundle.push(signed_versioned_transaction);
 
     let bundle_id = jito_client.send_bundle(&bundle).await?;
-    info!("bundle_id: {}", bundle_id);
+    info!("📦 bundle_id: {}", bundle_id);
 
     let txs = if wait_for_confirmation {
         wait_for_bundle_confirmation(
@@ -162,8 +163,9 @@ pub async fn send_versioned_transaction(
                 }
             },
             bundle_id,
-            Duration::from_millis(200),
-            Duration::from_secs(1),
+            Duration::from_millis(1000),
+            Duration::from_secs(5),
+            false,
         )
         .await?
     } else {

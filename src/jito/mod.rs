@@ -120,12 +120,17 @@ pub async fn wait_for_bundle_confirmation<F, Fut>(
     bundle_id: String,
     interval: Duration,
     timeout: Duration,
+    show_progress: bool,
 ) -> Result<Vec<String>>
 where
     F: Fn(String) -> Fut,
     Fut: Future<Output = Result<Vec<Value>>>,
 {
-    let progress_bar = new_progress_bar();
+    let progress_bar = if show_progress {
+        Some(new_progress_bar())
+    } else {
+        None
+    };
     let start_time = Instant::now();
 
     loop {
@@ -143,7 +148,9 @@ where
             debug!("{:?}", bundle_status);
             match bundle_status.confirmation_status.as_str() {
                 "finalized" | "confirmed" => {
-                    progress_bar.finish_and_clear();
+                    progress_bar.as_ref().map(|pb| {
+                        pb.finish_and_clear();
+                    });
                     info!(
                         "Finalized bundle {}: {}",
                         bundle_id, bundle_status.confirmation_status
@@ -156,20 +163,27 @@ where
                     return Ok(bundle_status.transactions);
                 }
                 _ => {
-                    progress_bar.set_message(format!(
-                        "Finalizing bundle {}: {}",
-                        bundle_id, bundle_status.confirmation_status
-                    ));
+                    progress_bar.as_ref().map(|pb| {
+                        pb.set_message(format!(
+                            "Finalizing bundle {}: {}",
+                            bundle_id, bundle_status.confirmation_status
+                        ));
+                    });
                 }
             }
         } else {
-            progress_bar.set_message(format!("Finalizing bundle {}: {}", bundle_id, "None"));
+            progress_bar.as_ref().map(|pb| {
+                pb.set_message(format!("Finalizing bundle {}: {}", bundle_id, "None"));
+            });
         }
 
         // check loop exceeded 1 minute,
         if start_time.elapsed() > timeout {
-            warn!("Loop exceeded {:?}, breaking out.", timeout);
-            return Err(anyhow!("Bundle status get timeout"));
+            debug!(
+                "Bundle {} confirmation timeout after {:?}",
+                bundle_id, timeout
+            );
+            return Err(anyhow!("Bundle {} confirmation timeout", bundle_id,));
         }
 
         // Wait for a certain duration before retrying
@@ -213,6 +227,7 @@ mod tests {
                 "6e4b90284778a40633b56e4289202ea79e62d2296bb3d45398bb93f6c9ec083d".to_string(),
                 Duration::from_secs(1),
                 Duration::from_secs(1),
+                true,
             )
             .await;
             assert!(wait_result.is_ok());
@@ -225,6 +240,7 @@ mod tests {
             "6e4b90284778a40633b56e4289202ea79e62d2296bb3d45398bb93f6c9ec083d".to_string(),
             Duration::from_secs(1),
             Duration::from_secs(2),
+            true,
         )
         .await;
         assert!(wait_result.is_err());

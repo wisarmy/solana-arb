@@ -152,7 +152,7 @@ pub fn build_instructions(
         ixs.push(cleanup);
     }
     // other instructions
-    ixs.extend(swap_instructions_response.other_instructions);
+    // ixs.extend(swap_instructions_response.other_instructions);
 
     ixs
 }

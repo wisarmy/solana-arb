@@ -6,7 +6,8 @@ bitflags! {
         const RAYDIUM = 0b0000_0001;
         const METEORA_DLMM = 0b0000_0010;
         const WHIRLPOOL = 0b0000_0100;
-        const ALL = Self::RAYDIUM.bits() | Self::METEORA_DLMM.bits() | Self::WHIRLPOOL.bits();
+        const PHOENIX = 0b0000_1000;
+        const ALL = Self::RAYDIUM.bits() | Self::METEORA_DLMM.bits() | Self::WHIRLPOOL.bits() | Self::PHOENIX.bits();
     }
 }
 
@@ -22,6 +23,9 @@ impl ToString for Dex {
         }
         if self.contains(Dex::WHIRLPOOL) {
             dexes.push("Whirlpool");
+        }
+        if self.contains(Dex::PHOENIX) {
+            dexes.push("Phoenix");
         }
 
         dexes.join(",")

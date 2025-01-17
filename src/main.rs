@@ -12,10 +12,11 @@ use solana_arb::token::get_mint;
 use solana_arb::tx::create_tx_with_address_table_lookup;
 use solana_arb::{arb, get_payer, get_rpc_client, jito, logger, tx};
 use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::VersionedTransaction;
 use spl_token::{amount_to_ui_amount, ui_amount_to_amount};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -168,106 +169,128 @@ async fn main() -> Result<()> {
             let amount_in_lamports = ui_amount_to_amount(*amount_in, 9);
 
             loop {
-                let rpc_client = match get_rpc_client() {
-                    Ok(client) => client,
-                    Err(e) => {
-                        warn!("Failed to get RPC client: {}", e);
-                        continue;
-                    }
-                };
-                match arb::caculate_profit(
-                    &jupiter_swap_api_client,
-                    &amount_in_lamports,
-                    &spl_token::native_mint::id(),
-                    mint,
-                    Dex::RAYDIUM | Dex::METEORA_DLMM | Dex::WHIRLPOOL,
-                    *slippage_bps,
-                    *partner_fee,
-                )
-                .await
-                {
-                    Ok((profit, quote_buy_response, quote_sell_response)) => {
-                        if profit < min_profit_lamports as i64 {
-                            info!(
-                                "Arb calculate {}, Profit: {} SOL too small, skip",
-                                mint,
-                                if profit < 0 {
-                                    -1.0 * amount_to_ui_amount(profit.abs() as u64, 9)
-                                } else {
-                                    amount_to_ui_amount(profit as u64, 9)
-                                },
-                            );
-                        } else {
-                            info!(
-                                "Arb calculate {}, Profit: {} sol",
-                                mint,
-                                amount_to_ui_amount(profit as u64, 9)
-                            );
-
-                            match async {
-                                let tip_lamports = profit as u64 / 2;
-                                let tip_account = jito::get_tip_account().await?;
-                                let tip_instruction = tx::get_tip_instruction(
-                                    &payer.pubkey(),
-                                    &tip_account,
-                                    tip_lamports,
-                                );
-
-                                let quote_response = arb::merge_quotes(
-                                    quote_buy_response,
-                                    quote_sell_response,
-                                    amount_in_lamports,
-                                    tip_lamports,
-                                );
-
-                                let mut tx_config = TransactionConfig::default();
-                                tx_config.dynamic_compute_unit_limit = true;
-                                tx_config.use_shared_accounts = Some(false);
-
-                                let swap_instructions_response = arb::swap_instructions(
-                                    &jupiter_swap_api_client,
-                                    &payer.pubkey(),
-                                    &quote_response,
-                                    tx_config,
-                                )
-                                .await?;
-
-                                let mut ixs = arb::build_instructions(
-                                    swap_instructions_response.clone(),
-                                    tip_instruction,
-                                );
-
-                                // println!("ixs: {:#?}", ixs);
-                                let versioned_transaction = create_tx_with_address_table_lookup(
-                                    &rpc_client,
-                                    &mut ixs,
-                                    &swap_instructions_response.address_lookup_table_addresses,
-                                    &payer,
-                                )?;
-
-                                tx::send_versioned_transaction(
-                                    &rpc_client,
-                                    &payer,
-                                    versioned_transaction,
-                                    true,
-                                )
-                                .await
-                            }
-                            .await
-                            {
-                                Ok(_) => info!("Arbitrage executed successfully"),
-                                Err(e) => info!("Failed to execute arbitrage: {}", e),
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        info!("Error calculating profit: {}", e);
-                    }
-                }
+                let jupiter_swap_api_client = jupiter_swap_api_client.clone();
+                let payer = payer.clone();
+                let mint = *mint;
+                let slippage_bps = *slippage_bps;
+                let partner_fee = *partner_fee;
+                tokio::spawn(async move {
+                    run_arbitrage(
+                        jupiter_swap_api_client,
+                        mint,
+                        amount_in_lamports,
+                        min_profit_lamports,
+                        slippage_bps,
+                        partner_fee,
+                        &payer,
+                    )
+                    .await
+                });
 
                 tokio::time::sleep(tokio::time::Duration::from_secs(*interval)).await;
             }
         }
     };
     Ok(())
+}
+
+pub async fn run_arbitrage(
+    jupiter_swap_api_client: JupiterSwapApiClient,
+    mint: Pubkey,
+    amount_in_lamports: u64,
+    min_profit_lamports: u64,
+    slippage_bps: u16,
+    partner_fee: f64,
+    payer: &Keypair,
+) {
+    let execution_id = uuid::Uuid::new_v4();
+
+    let rpc_client = match get_rpc_client() {
+        Ok(client) => client,
+        Err(e) => {
+            warn!("[{}] Failed to get RPC client: {}", execution_id, e);
+            return;
+        }
+    };
+    match arb::caculate_profit(
+        &jupiter_swap_api_client,
+        &amount_in_lamports,
+        &spl_token::native_mint::id(),
+        &mint,
+        Dex::ALL,
+        slippage_bps,
+        partner_fee,
+    )
+    .await
+    {
+        Ok((profit, quote_buy_response, quote_sell_response)) => {
+            let profit_ui_amount = if profit < 0 {
+                -1.0 * amount_to_ui_amount(profit.abs() as u64, 9)
+            } else {
+                amount_to_ui_amount(profit as u64, 9)
+            };
+
+            if profit < min_profit_lamports as i64 {
+                debug!(
+                    "[{}] ⏭️ Skip: {}, Profit: {} sol too small",
+                    execution_id, mint, profit_ui_amount,
+                );
+            } else {
+                info!(
+                    "[{}] 💰 Found opportunity: {}, Profit: {} sol",
+                    execution_id, mint, profit_ui_amount
+                );
+
+                match async {
+                    let tip_lamports = profit as u64 / 2;
+                    let tip_account = jito::get_tip_account().await?;
+                    let tip_instruction =
+                        tx::get_tip_instruction(&payer.pubkey(), &tip_account, tip_lamports);
+
+                    let quote_response = arb::merge_quotes(
+                        quote_buy_response,
+                        quote_sell_response,
+                        amount_in_lamports,
+                        tip_lamports,
+                    );
+
+                    let mut tx_config = TransactionConfig::default();
+                    tx_config.dynamic_compute_unit_limit = true;
+                    tx_config.use_shared_accounts = Some(false);
+
+                    let swap_instructions_response = arb::swap_instructions(
+                        &jupiter_swap_api_client,
+                        &payer.pubkey(),
+                        &quote_response,
+                        tx_config,
+                    )
+                    .await?;
+
+                    let mut ixs = arb::build_instructions(
+                        swap_instructions_response.clone(),
+                        tip_instruction,
+                    );
+
+                    // println!("ixs: {:#?}", ixs);
+                    let versioned_transaction = create_tx_with_address_table_lookup(
+                        &rpc_client,
+                        &mut ixs,
+                        &swap_instructions_response.address_lookup_table_addresses,
+                        &payer,
+                    )?;
+
+                    tx::send_versioned_transaction(&rpc_client, &payer, versioned_transaction, true)
+                        .await
+                }
+                .await
+                {
+                    Ok(_) => info!("[{}] 🚀 Arbitrage executed successfully", execution_id),
+                    Err(e) => warn!("[{}] ⚠️ Failed to execute arbitrage: {}", execution_id, e),
+                }
+            }
+        }
+        Err(e) => {
+            info!("Error calculating profit: {}", e);
+        }
+    }
 }
