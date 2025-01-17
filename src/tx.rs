@@ -117,8 +117,10 @@ pub async fn send_versioned_transaction(
 ) -> Result<Vec<String>> {
     // TX_SIMULATE
     if env::var("TX_SIMULATE").ok() == Some("true".to_string()) {
+        let signed_versioned_transaction =
+            VersionedTransaction::try_new(versioned_transaction.message, &[&keypair])?;
         let simulate_result = client
-            .simulate_transaction(&versioned_transaction)
+            .simulate_transaction(&signed_versioned_transaction)
             .inspect_err(|err| {
                 println!("err: {}", err);
             })?;

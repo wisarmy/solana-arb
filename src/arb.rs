@@ -17,8 +17,9 @@ pub async fn caculate_profit(
     token_in: &Pubkey,
     token_out: &Pubkey,
     dexes: Dex,
+    slippage_bps: u16,
+    partner_fee: f64,
 ) -> Result<(i64, QuoteResponse, QuoteResponse)> {
-    let slippage_bps = 0;
     let native_mint = spl_token::native_mint::id();
     if token_in != &native_mint {
         return Err(anyhow!("Only support swap from native mint"));
@@ -57,6 +58,8 @@ pub async fn caculate_profit(
     debug!("swap fee amount (only caculate wsol): {}", fee_amount);
     let mut profit = quote_sell_response.out_amount as i64 - *amount_in as i64;
     profit = profit - fee_amount as i64;
+    // caculate partner fee
+    profit = profit - (*amount_in as f64 * partner_fee) as i64;
 
     Ok((profit, quote_buy_response, quote_sell_response))
 }

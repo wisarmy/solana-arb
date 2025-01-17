@@ -52,6 +52,10 @@ enum Commands {
             default_value_t = 0.0001
         )]
         min_profit: f64,
+        #[arg(long, help = "Slippage bps, 100 bps = 1%", default_value_t = 0)]
+        slippage_bps: u16,
+        #[arg(long, help = "Jupiter partner referral fee", default_value_t = 0.0)]
+        partner_fee: f64,
     },
 }
 
@@ -150,6 +154,8 @@ async fn main() -> Result<()> {
             amount_in,
             interval,
             min_profit,
+            partner_fee,
+            slippage_bps,
         } => {
             info!(
                 "mint: {}, amount_in: {}, interval: {}s, min_profit: {} SOL",
@@ -175,6 +181,8 @@ async fn main() -> Result<()> {
                     &spl_token::native_mint::id(),
                     mint,
                     Dex::RAYDIUM | Dex::METEORA_DLMM | Dex::WHIRLPOOL,
+                    *slippage_bps,
+                    *partner_fee,
                 )
                 .await
                 {
@@ -214,6 +222,7 @@ async fn main() -> Result<()> {
 
                                 let mut tx_config = TransactionConfig::default();
                                 tx_config.dynamic_compute_unit_limit = true;
+                                tx_config.use_shared_accounts = Some(false);
 
                                 let swap_instructions_response = arb::swap_instructions(
                                     &jupiter_swap_api_client,
