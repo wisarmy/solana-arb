@@ -47,6 +47,7 @@ async fn main() -> Result<()> {
         cli.bundle_id,
         Duration::from_millis(30000),
         Duration::from_secs(30),
+        true,
     )
     .await?;
 
