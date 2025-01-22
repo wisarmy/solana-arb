@@ -53,6 +53,9 @@ enum Commands {
         min_profit: f64,
         #[arg(long, help = "Jupiter partner referral fee", default_value_t = 0.0)]
         partner_fee: f64,
+
+        #[arg(long, help = "Wait for confirmation", default_value_t = false)]
+        wait_for_confirmation: bool,
     },
 }
 
@@ -151,6 +154,7 @@ async fn main() -> Result<()> {
             interval,
             min_profit,
             partner_fee,
+            wait_for_confirmation,
         } => {
             info!(
                 "mint: {}, amount_in: {}, interval: {}s, min_profit: {} SOL",
@@ -167,6 +171,7 @@ async fn main() -> Result<()> {
                 let payer = payer.clone();
                 let mint = *mint;
                 let partner_fee = *partner_fee;
+                let wait_for_confirmation = *wait_for_confirmation;
                 tokio::spawn(async move {
                     run_arbitrage(
                         jupiter_swap_api_client,
@@ -175,6 +180,7 @@ async fn main() -> Result<()> {
                         min_profit_lamports,
                         partner_fee,
                         &payer,
+                        wait_for_confirmation,
                     )
                     .await
                 });
@@ -193,6 +199,7 @@ pub async fn run_arbitrage(
     min_profit_lamports: u64,
     partner_fee: f64,
     payer: &Keypair,
+    wait_for_confirmation: bool,
 ) {
     let execution_id = uuid::Uuid::new_v4();
 
@@ -276,8 +283,13 @@ pub async fn run_arbitrage(
                         &payer,
                     )?;
 
-                    tx::send_versioned_transaction(&rpc_client, &payer, versioned_transaction, true)
-                        .await
+                    tx::send_versioned_transaction(
+                        &rpc_client,
+                        &payer,
+                        versioned_transaction,
+                        wait_for_confirmation,
+                    )
+                    .await
                 }
                 .await
                 {
