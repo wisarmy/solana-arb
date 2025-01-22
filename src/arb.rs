@@ -17,9 +17,9 @@ pub async fn caculate_profit(
     token_in: &Pubkey,
     token_out: &Pubkey,
     dexes: Dex,
-    slippage_bps: u16,
     partner_fee: f64,
 ) -> Result<(i64, QuoteResponse, QuoteResponse)> {
+    let slippage_bps = 0u16;
     let native_mint = spl_token::native_mint::id();
     if token_in != &native_mint {
         return Err(anyhow!("Only support swap from native mint"));
@@ -35,23 +35,13 @@ pub async fn caculate_profit(
         ..QuoteRequest::default()
     };
     let quote_buy_response = jupiter_swap_api_client.quote(&quote_request).await?;
-    let mut buy_dexes = vec![];
-    quote_buy_response
-        .route_plan
-        .iter()
-        .for_each(|route| buy_dexes.push(route.swap_info.label.as_str()));
-
-    trace!("buy_dexes {:?}", buy_dexes);
-    let remaining_dexes = dexes.exclude(&Dex::from_vec(buy_dexes));
-    trace!("remaining_dexes {:?}", remaining_dexes);
-
     trace!("quote_buy_response: {:#?}", quote_buy_response);
 
     let quote_request = QuoteRequest {
         amount: quote_buy_response.out_amount,
         input_mint: *token_out,
         output_mint: *token_in,
-        dexes: Some(remaining_dexes.to_string()),
+        dexes: Some(dexes.to_string()),
         slippage_bps,
         only_direct_routes: Some(true),
         ..QuoteRequest::default()

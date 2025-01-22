@@ -33,8 +33,6 @@ enum Commands {
         direction: String,
         #[clap(help = "WSOL ui amount for swap")]
         amount_in: f64,
-        #[arg(long, help = "use jito to swap", default_value_t = false)]
-        jito: bool,
     },
 
     Arb {
@@ -53,8 +51,6 @@ enum Commands {
             default_value_t = 0.0001
         )]
         min_profit: f64,
-        #[arg(long, help = "Slippage bps, 100 bps = 1%", default_value_t = 0)]
-        slippage_bps: u16,
         #[arg(long, help = "Jupiter partner referral fee", default_value_t = 0.0)]
         partner_fee: f64,
     },
@@ -78,11 +74,10 @@ async fn main() -> Result<()> {
             mint,
             direction,
             amount_in,
-            jito,
         } => {
             info!(
-                "mint: {}, direction: {}, amount_in: {}, jito: {}",
-                mint, direction, amount_in, jito
+                "mint: {}, direction: {}, amount_in: {}",
+                mint, direction, amount_in
             );
 
             let native_mint = spl_token::native_mint::id();
@@ -156,7 +151,6 @@ async fn main() -> Result<()> {
             interval,
             min_profit,
             partner_fee,
-            slippage_bps,
         } => {
             info!(
                 "mint: {}, amount_in: {}, interval: {}s, min_profit: {} SOL",
@@ -172,7 +166,6 @@ async fn main() -> Result<()> {
                 let jupiter_swap_api_client = jupiter_swap_api_client.clone();
                 let payer = payer.clone();
                 let mint = *mint;
-                let slippage_bps = *slippage_bps;
                 let partner_fee = *partner_fee;
                 tokio::spawn(async move {
                     run_arbitrage(
@@ -180,7 +173,6 @@ async fn main() -> Result<()> {
                         mint,
                         amount_in_lamports,
                         min_profit_lamports,
-                        slippage_bps,
                         partner_fee,
                         &payer,
                     )
@@ -199,7 +191,6 @@ pub async fn run_arbitrage(
     mint: Pubkey,
     amount_in_lamports: u64,
     min_profit_lamports: u64,
-    slippage_bps: u16,
     partner_fee: f64,
     payer: &Keypair,
 ) {
@@ -218,7 +209,6 @@ pub async fn run_arbitrage(
         &spl_token::native_mint::id(),
         &mint,
         Dex::ALL,
-        slippage_bps,
         partner_fee,
     )
     .await
