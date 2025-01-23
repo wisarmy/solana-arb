@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, env};
 
 use anyhow::{Ok, Result, anyhow};
 use jupiter_swap_api_client::{
@@ -9,7 +9,7 @@ use jupiter_swap_api_client::{
 };
 use rust_decimal::{Decimal, prelude::Zero};
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey, transaction::VersionedTransaction};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::dex::Dex;
 
@@ -27,6 +27,29 @@ pub async fn caculate_profit(
     if token_in != &native_mint {
         return Err(anyhow!("Only support swap from native mint"));
     }
+    // decay factor
+    let mut buy_decay_factor: f64 = env::var("BUY_DECAY_FACTOR")
+        .unwrap_or("1.0".to_string())
+        .parse()
+        .unwrap_or(1.0);
+
+    let mut sell_decay_factor: f64 = env::var("SELL_DECAY_FACTOR")
+        .unwrap_or("1.0".to_string())
+        .parse()
+        .unwrap_or(1.0);
+
+    if buy_decay_factor <= 0.0 || buy_decay_factor > 1.0 {
+        warn!("Invalid buy_decay_factor: {}, using 1.0", buy_decay_factor);
+        buy_decay_factor = 1.0;
+    }
+
+    if sell_decay_factor <= 0.0 || sell_decay_factor > 1.0 {
+        warn!(
+            "Invalid sell_decay_factor: {}, using 1.0",
+            sell_decay_factor
+        );
+        sell_decay_factor = 1.0;
+    }
 
     let quote_request = QuoteRequest {
         amount: *amount_in,
@@ -38,8 +61,21 @@ pub async fn caculate_profit(
         quote_args: jupiter_extra_args.clone(),
         ..QuoteRequest::default()
     };
-    let quote_buy_response = jupiter_swap_api_client.quote(&quote_request).await?;
+    let mut quote_buy_response = jupiter_swap_api_client.quote(&quote_request).await?;
     trace!("quote_buy_response: {:#?}", quote_buy_response);
+    // buy decay factor
+    let decayed_buy_out_amount = (quote_buy_response.out_amount as f64 * buy_decay_factor) as u64;
+    let decayed_buy_other_amount_threshold =
+        (quote_buy_response.other_amount_threshold as f64 * buy_decay_factor) as u64;
+    debug!(
+        "buy out amount: {}(decayed: {}), other amount threshold: {}(decayed: {})",
+        quote_buy_response.out_amount,
+        decayed_buy_out_amount,
+        quote_buy_response.other_amount_threshold,
+        decayed_buy_other_amount_threshold
+    );
+    quote_buy_response.out_amount = decayed_buy_out_amount;
+    quote_buy_response.other_amount_threshold = decayed_buy_other_amount_threshold;
 
     let quote_request = QuoteRequest {
         amount: quote_buy_response.out_amount,
@@ -52,8 +88,22 @@ pub async fn caculate_profit(
         ..QuoteRequest::default()
     };
 
-    let quote_sell_response = jupiter_swap_api_client.quote(&quote_request).await?;
+    let mut quote_sell_response = jupiter_swap_api_client.quote(&quote_request).await?;
     trace!("quote_sell_response: {:#?}", quote_sell_response);
+    // sell decay factor
+    let decayed_sell_out_amount =
+        (quote_sell_response.out_amount as f64 * sell_decay_factor) as u64;
+    let decayed_sell_other_amount_threshold =
+        (quote_sell_response.other_amount_threshold as f64 * sell_decay_factor) as u64;
+    debug!(
+        "sell out amount: {}(decayed: {}), other amount threshold: {}(decayed: {})",
+        quote_sell_response.out_amount,
+        decayed_sell_out_amount,
+        quote_sell_response.other_amount_threshold,
+        decayed_sell_other_amount_threshold
+    );
+    quote_sell_response.out_amount = decayed_sell_out_amount;
+    quote_sell_response.other_amount_threshold = decayed_sell_other_amount_threshold;
 
     let mut fee_amount = 0u64;
     quote_buy_response.route_plan.iter().for_each(|route| {
