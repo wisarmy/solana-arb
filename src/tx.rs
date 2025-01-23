@@ -114,6 +114,7 @@ pub async fn send_versioned_transaction(
     client: &RpcClient,
     keypair: &Keypair,
     versioned_transaction: VersionedTransaction,
+    tip: Option<(Pubkey, u64)>,
     wait_for_confirmation: bool,
 ) -> Result<Vec<String>> {
     // TX_SIMULATE
@@ -142,9 +143,19 @@ pub async fn send_versioned_transaction(
     )));
     let mut bundle: Vec<VersionedTransaction> = vec![];
     // sign tx
+    let recent_blockhash = *versioned_transaction.message.recent_blockhash();
     let signed_versioned_transaction =
         VersionedTransaction::try_new(versioned_transaction.message, &[&keypair])?;
     bundle.push(signed_versioned_transaction);
+
+    if let Some((tip_account, tip_lamports)) = tip {
+        bundle.push(VersionedTransaction::from(system_transaction::transfer(
+            &keypair,
+            &tip_account,
+            tip_lamports,
+            recent_blockhash,
+        )));
+    }
 
     let bundle_id = jito_client.send_bundle(&bundle).await?;
     info!("📦 bundle_id: {}", bundle_id);

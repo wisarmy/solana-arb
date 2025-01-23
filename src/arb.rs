@@ -108,7 +108,10 @@ pub async fn swap(
             &SwapRequest {
                 user_public_key: user_public_key.clone(),
                 quote_response: quote_response.clone(),
-                config: TransactionConfig::default(),
+                config: TransactionConfig {
+                    use_shared_accounts: Some(false),
+                    ..Default::default()
+                },
             },
             jupiter_extra_args,
         )
@@ -124,14 +127,17 @@ pub async fn swap_instructions(
     jupiter_extra_args: Option<HashMap<String, String>>,
     user_public_key: &Pubkey,
     quote_response: &QuoteResponse,
-    tx_config: TransactionConfig,
 ) -> Result<SwapInstructionsResponse> {
     let swap_instructions = jupiter_swap_api_client
         .swap_instructions(
             &SwapRequest {
                 user_public_key: user_public_key.clone(),
                 quote_response: quote_response.clone(),
-                config: tx_config,
+                config: TransactionConfig {
+                    dynamic_compute_unit_limit: true,
+                    use_shared_accounts: Some(false),
+                    ..Default::default()
+                },
             },
             jupiter_extra_args,
         )

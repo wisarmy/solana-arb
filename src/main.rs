@@ -69,6 +69,8 @@ enum Commands {
 
         #[arg(long, help = "Wait for confirmation", default_value_t = false)]
         wait_for_confirmation: bool,
+        #[arg(long, help = "Arbitrage version to use: 1 or 2", default_value_t = 1)]
+        version: u8,
     },
 }
 
@@ -166,6 +168,7 @@ async fn main() -> Result<()> {
             partner_fee,
             tip_percentage,
             wait_for_confirmation,
+            version,
         } => {
             info!(
                 "mint: {}, amount_in: {}, interval: {}s, min_profit: {} SOL",
@@ -185,19 +188,42 @@ async fn main() -> Result<()> {
                 let partner_fee = *partner_fee;
                 let tip_percentage = *tip_percentage;
                 let wait_for_confirmation = *wait_for_confirmation;
+                let version = *version;
                 tokio::spawn(async move {
-                    run_arbitrage(
-                        jupiter_swap_api_client,
-                        jupiter_extra_args,
-                        mint,
-                        amount_in_lamports,
-                        min_profit_lamports,
-                        partner_fee,
-                        tip_percentage,
-                        &payer,
-                        wait_for_confirmation,
-                    )
-                    .await
+                    match version {
+                        1 => {
+                            run_arbitrage(
+                                jupiter_swap_api_client,
+                                jupiter_extra_args,
+                                mint,
+                                amount_in_lamports,
+                                min_profit_lamports,
+                                partner_fee,
+                                tip_percentage,
+                                &payer,
+                                wait_for_confirmation,
+                            )
+                            .await
+                        }
+                        2 => {
+                            run_arbitrage_v2(
+                                jupiter_swap_api_client,
+                                jupiter_extra_args,
+                                mint,
+                                amount_in_lamports,
+                                min_profit_lamports,
+                                partner_fee,
+                                tip_percentage,
+                                &payer,
+                                wait_for_confirmation,
+                            )
+                            .await
+                        }
+                        _ => {
+                            warn!("Invalid version number: {}", version);
+                            return;
+                        }
+                    }
                 });
 
                 tokio::time::sleep(tokio::time::Duration::from_secs(*interval)).await;
@@ -288,7 +314,6 @@ pub async fn run_arbitrage(
                         jupiter_extra_args,
                         &payer.pubkey(),
                         &quote_response,
-                        tx_config,
                     )
                     .await?;
                     let swap_time = start_swap.elapsed();
@@ -314,12 +339,129 @@ pub async fn run_arbitrage(
                         &rpc_client,
                         &payer,
                         versioned_transaction,
+                        None,
                         wait_for_confirmation,
                     )
                     .await;
                     let send_tx_time = start_send_tx.elapsed();
-                    info!("[{}] 🕒 Timings({:?}): quote_time={:?}, swap_instructions={:?}, create_tx={:?}, send_tx={:?}",
+                    info!("[{}] 🕒 Timings({:?}): quote_time={:?}, swap_time={:?}, create_tx={:?}, send_tx={:?}",
                         execution_id, start_time.elapsed(), quote_time, swap_time, create_tx_time, send_tx_time);
+                    result
+                }
+                .await
+                {
+                    Ok(_) => info!("[{}] 🚀 Arbitrage executed successfully", execution_id),
+                    Err(e) => warn!("[{}] ⚠️ Failed to execute arbitrage: {}", execution_id, e),
+                }
+            }
+        }
+        Err(e) => {
+            info!("Error calculating profit: {}", e);
+        }
+    }
+}
+
+pub async fn run_arbitrage_v2(
+    jupiter_swap_api_client: JupiterSwapApiClient,
+    jupiter_extra_args: Option<HashMap<String, String>>,
+    mint: Pubkey,
+    amount_in_lamports: u64,
+    min_profit_lamports: u64,
+    partner_fee: f64,
+    tip_percentage: f64,
+    payer: &Keypair,
+    wait_for_confirmation: bool,
+) {
+    let execution_id = uuid::Uuid::new_v4();
+
+    let rpc_client = match get_rpc_client() {
+        Ok(client) => client,
+        Err(e) => {
+            warn!("[{}] Failed to get RPC client: {}", execution_id, e);
+            return;
+        }
+    };
+
+    let start_time = Instant::now();
+    match arb::caculate_profit(
+        &jupiter_swap_api_client,
+        jupiter_extra_args.clone(),
+        &amount_in_lamports,
+        &spl_token::native_mint::id(),
+        &mint,
+        Dex::ALL,
+        partner_fee,
+    )
+    .await
+    {
+        Ok((profit, quote_buy_response, quote_sell_response)) => {
+            let quote_time = start_time.elapsed();
+            let profit_ui_amount = if profit < 0 {
+                -1.0 * amount_to_ui_amount(profit.abs() as u64, 9)
+            } else {
+                amount_to_ui_amount(profit as u64, 9)
+            };
+
+            if profit < min_profit_lamports as i64 {
+                debug!(
+                    "[{}] ⏭️ Skip: {}, Profit: {} sol too small",
+                    execution_id, mint, profit_ui_amount,
+                );
+            } else {
+                info!(
+                    "[{}] 💰 Found opportunity: {}, Profit: {} sol",
+                    execution_id, mint, profit_ui_amount
+                );
+                match async {
+                    let tip_lamports = ((profit as u64) as f64 * tip_percentage.min(1.0)) as u64;
+                    let tip_account = jito::get_tip_account().await?;
+
+                    let quote_response = arb::merge_quotes(
+                        quote_buy_response,
+                        quote_sell_response,
+                        amount_in_lamports,
+                        tip_lamports,
+                    );
+
+                    debug!(
+                        "[{}] out_amount: {}, other_amount_threshold: {}",
+                        execution_id,
+                        quote_response.out_amount,
+                        quote_response.other_amount_threshold
+                    );
+
+                    let mut tx_config = TransactionConfig::default();
+                    tx_config.dynamic_compute_unit_limit = true;
+                    tx_config.use_shared_accounts = Some(false);
+
+                    let start_swap = Instant::now();
+                    let versioned_transaction = arb::swap(
+                        &jupiter_swap_api_client,
+                        jupiter_extra_args,
+                        &payer.pubkey(),
+                        &quote_response,
+                    )
+                    .await?;
+                    let swap_time = start_swap.elapsed();
+
+                    let start_send_tx = Instant::now();
+                    let result = tx::send_versioned_transaction(
+                        &rpc_client,
+                        &payer,
+                        versioned_transaction,
+                        Some((tip_account, tip_lamports)),
+                        wait_for_confirmation,
+                    )
+                    .await;
+                    let send_tx_time = start_send_tx.elapsed();
+                    info!(
+                        "[{}] 🕒 Timings({:?}): quote_time={:?}, swap_time={:?}, send_tx={:?}",
+                        execution_id,
+                        start_time.elapsed(),
+                        quote_time,
+                        swap_time,
+                        send_tx_time
+                    );
                     result
                 }
                 .await
