@@ -136,7 +136,6 @@ pub async fn send_versioned_transaction(
         };
     }
 
-    let start_time = Instant::now();
     let jito_client = Arc::new(JitoRpcClient::new(format!(
         "{}/api/v1/bundles",
         jito::BLOCK_ENGINE_URL.to_string()
@@ -172,7 +171,6 @@ pub async fn send_versioned_transaction(
         vec![]
     };
 
-    info!("tx elapsed: {:?}", start_time.elapsed());
     Ok(txs)
 }
 

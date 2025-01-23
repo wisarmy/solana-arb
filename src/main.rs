@@ -17,6 +17,7 @@ use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use solana_sdk::transaction::VersionedTransaction;
 use spl_token::{amount_to_ui_amount, ui_amount_to_amount};
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 #[derive(Parser)]
@@ -52,8 +53,19 @@ enum Commands {
             default_value_t = 0.0001
         )]
         min_profit: f64,
-        #[arg(long, help = "Jupiter partner referral fee", default_value_t = 0.0)]
+        #[arg(
+            long,
+            help = "Jupiter partner referral fee, e.g. 0.002 = 0.2%",
+            default_value_t = 0.0
+        )]
         partner_fee: f64,
+
+        #[arg(
+            long,
+            help = "Tip percentage (0.0-1.0) of profit to be paid to jito, e.g. 0.5 = 50%",
+            default_value_t = 0.5
+        )]
+        tip_percentage: f64,
 
         #[arg(long, help = "Wait for confirmation", default_value_t = false)]
         wait_for_confirmation: bool,
@@ -152,6 +164,7 @@ async fn main() -> Result<()> {
             interval,
             min_profit,
             partner_fee,
+            tip_percentage,
             wait_for_confirmation,
         } => {
             info!(
@@ -170,6 +183,7 @@ async fn main() -> Result<()> {
                 let payer = payer.clone();
                 let mint = *mint;
                 let partner_fee = *partner_fee;
+                let tip_percentage = *tip_percentage;
                 let wait_for_confirmation = *wait_for_confirmation;
                 tokio::spawn(async move {
                     run_arbitrage(
@@ -179,6 +193,7 @@ async fn main() -> Result<()> {
                         amount_in_lamports,
                         min_profit_lamports,
                         partner_fee,
+                        tip_percentage,
                         &payer,
                         wait_for_confirmation,
                     )
@@ -199,6 +214,7 @@ pub async fn run_arbitrage(
     amount_in_lamports: u64,
     min_profit_lamports: u64,
     partner_fee: f64,
+    tip_percentage: f64,
     payer: &Keypair,
     wait_for_confirmation: bool,
 ) {
@@ -211,6 +227,8 @@ pub async fn run_arbitrage(
             return;
         }
     };
+
+    let start_calculate = Instant::now();
     match arb::caculate_profit(
         &jupiter_swap_api_client,
         jupiter_extra_args.clone(),
@@ -223,6 +241,7 @@ pub async fn run_arbitrage(
     .await
     {
         Ok((profit, quote_buy_response, quote_sell_response)) => {
+            let quote_time = start_calculate.elapsed();
             let profit_ui_amount = if profit < 0 {
                 -1.0 * amount_to_ui_amount(profit.abs() as u64, 9)
             } else {
@@ -240,7 +259,7 @@ pub async fn run_arbitrage(
                     execution_id, mint, profit_ui_amount
                 );
                 match async {
-                    let tip_lamports = profit as u64 / 2;
+                    let tip_lamports = ((profit as u64) as f64 * tip_percentage.min(1.0)) as u64;
                     let tip_account = jito::get_tip_account().await?;
                     let tip_instruction =
                         tx::get_tip_instruction(&payer.pubkey(), &tip_account, tip_lamports);
@@ -263,6 +282,7 @@ pub async fn run_arbitrage(
                     tx_config.dynamic_compute_unit_limit = true;
                     tx_config.use_shared_accounts = Some(false);
 
+                    let start_swap = Instant::now();
                     let swap_instructions_response = arb::swap_instructions(
                         &jupiter_swap_api_client,
                         jupiter_extra_args,
@@ -271,6 +291,7 @@ pub async fn run_arbitrage(
                         tx_config,
                     )
                     .await?;
+                    let swap_time = start_swap.elapsed();
 
                     let mut ixs = arb::build_instructions(
                         swap_instructions_response.clone(),
@@ -278,20 +299,28 @@ pub async fn run_arbitrage(
                     );
 
                     // println!("ixs: {:#?}", ixs);
+                    let start_create_tx = Instant::now();
                     let versioned_transaction = create_tx_with_address_table_lookup(
                         &rpc_client,
                         &mut ixs,
                         &swap_instructions_response.address_lookup_table_addresses,
                         &payer,
                     )?;
+                    let create_tx_time = start_create_tx.elapsed();
 
-                    tx::send_versioned_transaction(
+
+                    let start_send_tx = Instant::now();
+                    let result = tx::send_versioned_transaction(
                         &rpc_client,
                         &payer,
                         versioned_transaction,
                         wait_for_confirmation,
                     )
-                    .await
+                    .await;
+                    let send_tx_time = start_send_tx.elapsed();
+                    info!("[{}] 🕒 Timings: quote_time={:?}, swap_instructions={:?}, create_tx={:?}, send_tx={:?}",
+                        execution_id, quote_time, swap_time, create_tx_time, send_tx_time);
+                    result
                 }
                 .await
                 {
