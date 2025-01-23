@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Ok, Result, anyhow};
 use jupiter_swap_api_client::{
     JupiterSwapApiClient,
@@ -13,6 +15,7 @@ use crate::dex::Dex;
 
 pub async fn caculate_profit(
     jupiter_swap_api_client: &JupiterSwapApiClient,
+    jupiter_extra_args: Option<HashMap<String, String>>,
     amount_in: &u64,
     token_in: &Pubkey,
     token_out: &Pubkey,
@@ -32,6 +35,7 @@ pub async fn caculate_profit(
         dexes: Some(dexes.to_string()),
         slippage_bps,
         only_direct_routes: Some(true),
+        quote_args: jupiter_extra_args.clone(),
         ..QuoteRequest::default()
     };
     let quote_buy_response = jupiter_swap_api_client.quote(&quote_request).await?;
@@ -44,6 +48,7 @@ pub async fn caculate_profit(
         dexes: Some(dexes.to_string()),
         slippage_bps,
         only_direct_routes: Some(true),
+        quote_args: jupiter_extra_args,
         ..QuoteRequest::default()
     };
 
@@ -94,6 +99,7 @@ pub fn merge_quotes(
 
 pub async fn swap(
     jupiter_swap_api_client: &JupiterSwapApiClient,
+    jupiter_extra_args: Option<HashMap<String, String>>,
     user_public_key: &Pubkey,
     quote_response: &QuoteResponse,
 ) -> Result<VersionedTransaction> {
@@ -104,7 +110,7 @@ pub async fn swap(
                 quote_response: quote_response.clone(),
                 config: TransactionConfig::default(),
             },
-            None,
+            jupiter_extra_args,
         )
         .await?;
 
@@ -115,16 +121,20 @@ pub async fn swap(
 
 pub async fn swap_instructions(
     jupiter_swap_api_client: &JupiterSwapApiClient,
+    jupiter_extra_args: Option<HashMap<String, String>>,
     user_public_key: &Pubkey,
     quote_response: &QuoteResponse,
     tx_config: TransactionConfig,
 ) -> Result<SwapInstructionsResponse> {
     let swap_instructions = jupiter_swap_api_client
-        .swap_instructions(&SwapRequest {
-            user_public_key: user_public_key.clone(),
-            quote_response: quote_response.clone(),
-            config: tx_config,
-        })
+        .swap_instructions(
+            &SwapRequest {
+                user_public_key: user_public_key.clone(),
+                quote_response: quote_response.clone(),
+                config: tx_config,
+            },
+            jupiter_extra_args,
+        )
         .await?;
 
     Ok(swap_instructions)

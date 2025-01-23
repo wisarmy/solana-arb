@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 
 use anyhow::Result;
@@ -70,6 +71,12 @@ async fn main() -> Result<()> {
 
     let api_base_url = env::var("JUP_QUOTE_API").unwrap_or("https://quote-api.jup.ag/v6".into());
     info!("Using jupiter quote api url: {}", api_base_url);
+    let jupiter_extra_args: Option<HashMap<String, String>> =
+        env::var("JUP_QUOTE_API_KEY").ok().map(|api_key| {
+            let mut args = HashMap::new();
+            args.insert("api_key".to_string(), api_key);
+            args
+        });
     let jupiter_swap_api_client = JupiterSwapApiClient::new(api_base_url);
 
     match &cli.command {
@@ -98,6 +105,7 @@ async fn main() -> Result<()> {
                 output_mint: token_out,
                 dexes: Some("Raydium,Meteora DLMM,Whirlpool".into()),
                 slippage_bps: 500,
+                quote_args: jupiter_extra_args.clone(),
                 ..QuoteRequest::default()
             };
             // GET /quote
@@ -107,16 +115,6 @@ async fn main() -> Result<()> {
             tx_config.wrap_and_unwrap_sol = true;
             tx_config.compute_unit_price_micro_lamports =
                 Some(ComputeUnitPriceMicroLamports::MicroLamports(50000));
-            // POST /swap-instructions
-            let swap_instructions = jupiter_swap_api_client
-                .swap_instructions(&SwapRequest {
-                    user_public_key: payer.pubkey(),
-                    quote_response: quote_response.clone(),
-                    config: tx_config,
-                })
-                .await
-                .unwrap();
-            println!("swap_instructions: {swap_instructions:#?}");
             // POST /swap
             let swap_response = jupiter_swap_api_client
                 .swap(
@@ -125,7 +123,7 @@ async fn main() -> Result<()> {
                         quote_response: quote_response.clone(),
                         config: TransactionConfig::default(),
                     },
-                    None,
+                    jupiter_extra_args,
                 )
                 .await
                 .unwrap();
@@ -168,6 +166,7 @@ async fn main() -> Result<()> {
 
             loop {
                 let jupiter_swap_api_client = jupiter_swap_api_client.clone();
+                let jupiter_extra_args = jupiter_extra_args.clone();
                 let payer = payer.clone();
                 let mint = *mint;
                 let partner_fee = *partner_fee;
@@ -175,6 +174,7 @@ async fn main() -> Result<()> {
                 tokio::spawn(async move {
                     run_arbitrage(
                         jupiter_swap_api_client,
+                        jupiter_extra_args,
                         mint,
                         amount_in_lamports,
                         min_profit_lamports,
@@ -194,6 +194,7 @@ async fn main() -> Result<()> {
 
 pub async fn run_arbitrage(
     jupiter_swap_api_client: JupiterSwapApiClient,
+    jupiter_extra_args: Option<HashMap<String, String>>,
     mint: Pubkey,
     amount_in_lamports: u64,
     min_profit_lamports: u64,
@@ -212,6 +213,7 @@ pub async fn run_arbitrage(
     };
     match arb::caculate_profit(
         &jupiter_swap_api_client,
+        jupiter_extra_args.clone(),
         &amount_in_lamports,
         &spl_token::native_mint::id(),
         &mint,
@@ -237,7 +239,6 @@ pub async fn run_arbitrage(
                     "[{}] 💰 Found opportunity: {}, Profit: {} sol",
                     execution_id, mint, profit_ui_amount
                 );
-
                 match async {
                     let tip_lamports = profit as u64 / 2;
                     let tip_account = jito::get_tip_account().await?;
@@ -264,6 +265,7 @@ pub async fn run_arbitrage(
 
                     let swap_instructions_response = arb::swap_instructions(
                         &jupiter_swap_api_client,
+                        jupiter_extra_args,
                         &payer.pubkey(),
                         &quote_response,
                         tx_config,
