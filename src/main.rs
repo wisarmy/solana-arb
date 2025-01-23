@@ -228,7 +228,7 @@ pub async fn run_arbitrage(
         }
     };
 
-    let start_calculate = Instant::now();
+    let start_time = Instant::now();
     match arb::caculate_profit(
         &jupiter_swap_api_client,
         jupiter_extra_args.clone(),
@@ -241,7 +241,7 @@ pub async fn run_arbitrage(
     .await
     {
         Ok((profit, quote_buy_response, quote_sell_response)) => {
-            let quote_time = start_calculate.elapsed();
+            let quote_time = start_time.elapsed();
             let profit_ui_amount = if profit < 0 {
                 -1.0 * amount_to_ui_amount(profit.abs() as u64, 9)
             } else {
@@ -318,8 +318,8 @@ pub async fn run_arbitrage(
                     )
                     .await;
                     let send_tx_time = start_send_tx.elapsed();
-                    info!("[{}] 🕒 Timings: quote_time={:?}, swap_instructions={:?}, create_tx={:?}, send_tx={:?}",
-                        execution_id, quote_time, swap_time, create_tx_time, send_tx_time);
+                    info!("[{}] 🕒 Timings({:?}): quote_time={:?}, swap_instructions={:?}, create_tx={:?}, send_tx={:?}",
+                        execution_id, start_time.elapsed(), quote_time, swap_time, create_tx_time, send_tx_time);
                     result
                 }
                 .await
